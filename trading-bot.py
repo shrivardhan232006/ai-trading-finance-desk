@@ -5,6 +5,8 @@ Optional Sarvam narrative: set SARVAM_API_KEY and install sarvamai.
 """
 from __future__ import annotations
 import argparse, json, math, os, random, statistics, uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -92,7 +94,9 @@ class DeskManager:
         return {"mode":"PAPER_ONLY", "research":asdict(brief), "signal":asdict(signal), "risk":asdict(risk), "fill":asdict(fill) if fill else None, "portfolio":{"cash":round(self.cash,2),"position":self.position,"equity":round(equity,2),"pnl":round(equity-self.start,2)}, "compliance":compliance, "audit_events":self.audit.events}
 
 def main():
-    p = argparse.ArgumentParser(); p.add_argument("--symbol", default="NIFTY-DEMO"); p.add_argument("--capital", type=float, default=100000); p.add_argument("--json", action="store_true"); a = p.parse_args()
+    p = argparse.ArgumentParser(); p.add_argument("--symbol", default="NIFTY-DEMO"); p.add_argument("--capital", type=float, default=100000); p.add_argument("--json", action="store_true"); p.add_argument("--serve", action="store_true"); p.add_argument("--port", type=int, default=8000); a = p.parse_args()
+    if a.serve:
+        serve(a.port); return
     out = DeskManager(a.capital).run(a.symbol.upper())
     if a.json: print(json.dumps(out, indent=2)); return
     print(f"AI Trading Desk | {out['mode']} | {a.symbol.upper()}")
@@ -100,5 +104,25 @@ def main():
     print(f"Signal: {out['signal']['action']} {out['signal']['quantity']} @ {out['signal']['entry']:.2f}")
     print(f"Risk: {'APPROVED' if out['risk']['approved'] else 'REJECTED'} — {', '.join(out['risk']['reasons'])}")
     print(f"Fill: {out['fill']['status'] if out['fill'] else 'none'} | Cash: {out['portfolio']['cash']:.2f} | Audit events: {len(out['audit_events'])}")
+
+def serve(port: int):
+    root = Path(__file__).parent
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if self.path.startswith("/api/run"):
+                from urllib.parse import parse_qs, urlparse
+                query = parse_qs(urlparse(self.path).query); symbol = query.get("symbol", ["NIFTY-DEMO"])[0].upper(); capital = float(query.get("capital", [100000])[0])
+                self.send_json(DeskManager(capital).run(symbol)); return
+            file = "index.html" if self.path in ("/", "") else self.path.lstrip("/")
+            target = (root / file).resolve()
+            if root not in target.parents or not target.is_file(): self.send_error(404); return
+            content_type = {".html":"text/html", ".css":"text/css", ".js":"text/javascript"}.get(target.suffix, "text/plain")
+            body = target.read_bytes(); self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        def log_message(self, *_): pass
+    print(f"Desk dashboard running at http://localhost:{port}")
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 if __name__ == "__main__": main()
